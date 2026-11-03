@@ -19,38 +19,81 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Extract ZIP
+      - name: Extract Android Project
         shell: bash
         run: |
           set -euo pipefail
+
+          test -f NEXUS_Android_Reviewed.zip
+
           mkdir -p extracted
           unzip -q NEXUS_Android_Reviewed.zip -d extracted
 
-          PROJECT="$(find extracted -type f -name settings.gradle.kts -print -quit)"
-          if [ -z "$PROJECT" ]; then
+          PROJECT_FILE="$(find extracted -type f -name settings.gradle.kts -print -quit)"
+
+          if [ -z "$PROJECT_FILE" ]; then
             echo "ERROR: settings.gradle.kts not found"
+            find extracted -maxdepth 4 -type f
             exit 1
           fi
 
-          PROJECT="$(dirname "$PROJECT")"
-          echo "PROJECT_DIR=$PROJECT" >> "$GITHUB_ENV"
-          echo "Project directory: $PROJECT"
+          PROJECT_DIR="$(dirname "$PROJECT_FILE")"
 
-      - name: Fix Kotlin versions
+          echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
+
+          echo "===== PROJECT ====="
+          echo "$PROJECT_DIR"
+          echo "===== FILES ====="
+          find "$PROJECT_DIR" -maxdepth 3 -type f
+
+      - name: Fix Kotlin Plugin Versions
         shell: bash
         run: |
           set -euo pipefail
 
+          echo "===== BEFORE ====="
+          grep -RInE \
+            'kotlin|2\.1\.0|2\.2\.0' \
+            "$PROJECT_DIR" \
+            --include='*.gradle' \
+            --include='*.gradle.kts' \
+            --include='*.toml' \
+            --include='*.properties' \
+            || true
+
           while IFS= read -r -d '' file; do
-            sed -i 's/2.1.0/2.4.0/g; s/2.2.0/2.4.0/g' "$file"
+            sed -i \
+              -e 's/2\.1\.0/2.4.0/g' \
+              -e 's/2\.2\.0/2.4.0/g' \
+              "$file"
           done < <(
             find "$PROJECT_DIR" -type f \
               \( -name '*.gradle' \
               -o -name '*.gradle.kts' \
               -o -name '*.toml' \
-              -o -name 'gradle.properties' \) \
+              -o -name '*.properties' \) \
               -print0
           )
+
+          echo "===== AFTER ====="
+          grep -RInE \
+            'kotlin|2\.1\.0|2\.2\.0' \
+            "$PROJECT_DIR" \
+            --include='*.gradle' \
+            --include='*.gradle.kts' \
+            --include='*.toml' \
+            --include='*.properties' \
+            || true
+
+          if grep -RInE \
+            '2\.1\.0|2\.2\.0' \
+            "$PROJECT_DIR" \
+            --include='*.gradle' \
+            --include='*.gradle.kts' \
+            --include='*.toml'; then
+            echo "ERROR: Old Kotlin version still exists"
+            exit 1
+          fi
 
       - name: Install Java 17
         uses: actions/setup-java@v4
@@ -58,19 +101,22 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      - name: Install Gradle 8.11.1
+      - name: Install Gradle
         shell: bash
         run: |
           set -euo pipefail
 
+          GRADLE_VERSION=8.11.1
+
           curl -fL \
-            https://services.gradle.org/distributions/gradle-8.11.1-bin.zip \
+            "https://services.gradle.org/distributions/gradle-${GRADLE_VERSION}-bin.zip" \
             -o /tmp/gradle.zip
 
           unzip -q /tmp/gradle.zip -d /tmp
-          /tmp/gradle-8.11.1/bin/gradle --version
 
-      - name: Build APK
+          /tmp/gradle-${GRADLE_VERSION}/bin/gradle --version
+
+      - name: Build Debug APK
         shell: bash
         working-directory: ${{ env.PROJECT_DIR }}
         run: |
@@ -78,6 +124,7 @@ jobs:
 
           /tmp/gradle-8.11.1/bin/gradle \
             --no-daemon \
+            --stacktrace \
             clean \
             assembleDebug
 
@@ -94,7 +141,8 @@ jobs:
             exit 1
           fi
 
-          echo "APK generated: $APK"
+          echo "===== APK SUCCESS ====="
+          echo "$APK"
           ls -lh "$APK"
 
       - name: Upload APK
