@@ -26,16 +26,25 @@ jobs:
         with:
           gradle-version: '8.11.1'
 
-      - name: Extract project and fix Kotlin version
+      - name: Extract and force Kotlin version
+        shell: bash
         run: |
+          set -e
           unzip -q NEXUS_Android_Reviewed.zip -d extracted
           cd extracted/NEXUS_Full_OnDevice
+
           test -f app/build.gradle.kts
-          grep -RIl '2.1.0' --include='*.gradle.kts' . | xargs -r sed -i 's/2.1.0/2.4.0/g'
+
+          # Kotlin Gradle plugin version
+          find . -name '*.gradle.kts' -type f -print0 |
+            xargs -0 sed -i 's/2\.1\.0/2.4.0/g'
+
+          echo "Kotlin configuration:"
+          grep -RIn 'kotlin\|2.4.0' --include='*.gradle.kts' . || true
 
       - name: Build debug APK
         working-directory: extracted/NEXUS_Full_OnDevice
-        run: gradle --no-daemon assembleDebug
+        run: gradle --no-daemon assembleDebug --stacktrace
 
       - uses: actions/upload-artifact@v4
         with:
