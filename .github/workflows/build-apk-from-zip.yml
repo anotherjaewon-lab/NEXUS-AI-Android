@@ -1,1 +1,42 @@
 
+name: Build NEXUS APK from uploaded project ZIP
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'NEXUS_Android_Reviewed.zip'
+      - '.github/workflows/build-apk-from-zip.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.11.1'
+
+      - name: Extract project ZIP
+        run: |
+          unzip -q NEXUS_Android_Reviewed.zip -d extracted
+          test -f extracted/NEXUS_Full_OnDevice/app/build.gradle.kts
+
+      - name: Build debug APK
+        working-directory: extracted/NEXUS_Full_OnDevice
+        run: gradle --no-daemon assembleDebug
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: NEXUS-debug-apk
+          path: extracted/NEXUS_Full_OnDevice/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+
