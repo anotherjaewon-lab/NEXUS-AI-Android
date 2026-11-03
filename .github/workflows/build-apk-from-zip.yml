@@ -1,5 +1,5 @@
 
-name: Build NEXUS APK
+name: Build NEXUS Single APK
 
 on:
   workflow_dispatch:
@@ -11,143 +11,183 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: nexus-single-apk-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build:
+    name: Build arm64 APK with embedded Gemma 4
     runs-on: ubuntu-latest
+    timeout-minutes: 120
 
     steps:
-      - name: Checkout
+      - name: Checkout NEXUS project
         uses: actions/checkout@v4
 
-      - name: Extract Android Project
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          test -f NEXUS_Android_Reviewed.zip
-
-          mkdir -p extracted
-          unzip -q NEXUS_Android_Reviewed.zip -d extracted
-
-          PROJECT_FILE="$(find extracted -type f -name settings.gradle.kts -print -quit)"
-
-          if [ -z "$PROJECT_FILE" ]; then
-            echo "ERROR: settings.gradle.kts not found"
-            find extracted -maxdepth 4 -type f
-            exit 1
-          fi
-
-          PROJECT_DIR="$(dirname "$PROJECT_FILE")"
-
-          echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
-
-          echo "===== PROJECT ====="
-          echo "$PROJECT_DIR"
-          echo "===== FILES ====="
-          find "$PROJECT_DIR" -maxdepth 3 -type f
-
-      - name: Fix Kotlin Plugin Versions
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          echo "===== BEFORE ====="
-          grep -RInE \
-            'kotlin|2\.1\.0|2\.2\.0' \
-            "$PROJECT_DIR" \
-            --include='*.gradle' \
-            --include='*.gradle.kts' \
-            --include='*.toml' \
-            --include='*.properties' \
-            || true
-
-          while IFS= read -r -d '' file; do
-            sed -i \
-              -e 's/2\.1\.0/2.4.0/g' \
-              -e 's/2\.2\.0/2.4.0/g' \
-              "$file"
-          done < <(
-            find "$PROJECT_DIR" -type f \
-              \( -name '*.gradle' \
-              -o -name '*.gradle.kts' \
-              -o -name '*.toml' \
-              -o -name '*.properties' \) \
-              -print0
-          )
-
-          echo "===== AFTER ====="
-          grep -RInE \
-            'kotlin|2\.1\.0|2\.2\.0' \
-            "$PROJECT_DIR" \
-            --include='*.gradle' \
-            --include='*.gradle.kts' \
-            --include='*.toml' \
-            --include='*.properties' \
-            || true
-
-          if grep -RInE \
-            '2\.1\.0|2\.2\.0' \
-            "$PROJECT_DIR" \
-            --include='*.gradle' \
-            --include='*.gradle.kts' \
-            --include='*.toml'; then
-            echo "ERROR: Old Kotlin version still exists"
-            exit 1
-          fi
-
-      - name: Install Java 17
+      - name: Set up Java 17
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '17'
 
-      - name: Install Gradle
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android NDK and CMake
+        shell: bash
+        run: |
+          set -euo pipefail
+          yes | sdkmanager --licenses >/dev/null || true
+          sdkmanager \
+            "platforms;android-36" \
+            "build-tools;36.0.0" \
+            "ndk;29.0.13113456" \
+            "cmake;3.31.6"
+
+      - name: Extract NEXUS source
         shell: bash
         run: |
           set -euo pipefail
 
-          GRADLE_VERSION=8.11.1
+          test -s NEXUS_Android_Reviewed.zip
 
-          curl -fL \
-            "https://services.gradle.org/distributions/gradle-${GRADLE_VERSION}-bin.zip" \
-            -o /tmp/gradle.zip
+          mkdir -p "$RUNNER_TEMP/nexus-source"
+          unzip -q NEXUS_Android_Reviewed.zip \
+            -d "$RUNNER_TEMP/nexus-source"
 
-          unzip -q /tmp/gradle.zip -d /tmp
+          NEXUS_SOURCE_DIR="$RUNNER_TEMP/nexus-source/NEXUS_SingleAPK"
 
-          /tmp/gradle-${GRADLE_VERSION}/bin/gradle --version
+          test -s "$NEXUS_SOURCE_DIR/app/build.gradle.kts"
+          test -s "$NEXUS_SOURCE_DIR/app/src/main/java/com/nexus/full/NexusVM.kt"
 
-      - name: Build Debug APK
+          echo "NEXUS_SOURCE_DIR=$NEXUS_SOURCE_DIR" >> "$GITHUB_ENV"
+
+      - name: Fetch pinned llama.cpp Android engine
         shell: bash
-        working-directory: ${{ env.PROJECT_DIR }}
         run: |
           set -euo pipefail
 
-          /tmp/gradle-8.11.1/bin/gradle \
+          LLAMA_COMMIT="6b9c0cfcba5ef1e86c14f0d4925578e245274d95"
+
+          git clone --filter=blob:none \
+            https://github.com/ggml-org/llama.cpp.git \
+            "$RUNNER_TEMP/llama.cpp"
+
+          git -C "$RUNNER_TEMP/llama.cpp" checkout "$LLAMA_COMMIT"
+
+          test "$(git -C "$RUNNER_TEMP/llama.cpp" rev-parse HEAD)" = "$LLAMA_COMMIT"
+
+          rm -rf "$RUNNER_TEMP/llama.cpp/.git"
+
+      - name: Overlay NEXUS application
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          SAMPLE="$RUNNER_TEMP/llama.cpp/examples/llama.android"
+
+          test -f "$SAMPLE/lib/src/main/cpp/ai_chat.cpp"
+          test -f "$SAMPLE/gradlew"
+
+          cp "$NEXUS_SOURCE_DIR/app/build.gradle.kts" \
+            "$SAMPLE/app/build.gradle.kts"
+
+          cp "$NEXUS_SOURCE_DIR/app/src/main/AndroidManifest.xml" \
+            "$SAMPLE/app/src/main/AndroidManifest.xml"
+
+          rm -rf "$SAMPLE/app/src/main/java"
+
+          mkdir -p "$SAMPLE/app/src/main/java/com/nexus/full"
+
+          cp "$NEXUS_SOURCE_DIR"/app/src/main/java/com/nexus/full/*.kt \
+            "$SAMPLE/app/src/main/java/com/nexus/full/"
+
+          mkdir -p "$SAMPLE/app/src/main/assets/model"
+
+          echo "SAMPLE_DIR=$SAMPLE" >> "$GITHUB_ENV"
+
+      - name: Download and verify Gemma 4 E2B
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          MODEL_DIR="$RUNNER_TEMP/model"
+          mkdir -p "$MODEL_DIR"
+
+          MODEL="$MODEL_DIR/gemma-4-E2B-it-Q4_0.gguf"
+
+          MODEL_URL="https://huggingface.co/ggml-org/gemma-4-E2B-it-GGUF/resolve/main/gemma-4-E2B-it-Q4_0.gguf"
+
+          EXPECTED_SHA256="8e30dff3ac4c8434c49a7036fa15564bdbb6044e42bf04550bf1a096ad7e6a52"
+
+          curl --fail --location \
+            --retry 5 \
+            --retry-all-errors \
+            --connect-timeout 30 \
+            "$MODEL_URL" \
+            --output "$MODEL"
+
+          echo "$EXPECTED_SHA256  $MODEL" | sha256sum --check --strict
+
+          test "$(stat -c%s "$MODEL")" -gt 2000000000
+
+          echo "Verified model size:"
+          du -h "$MODEL"
+
+          split -b 700M -d -a 3 \
+            "$MODEL" \
+            "$SAMPLE_DIR/app/src/main/assets/model/model-"
+
+          for PART in "$SAMPLE_DIR"/app/src/main/assets/model/model-*; do
+            mv "$PART" "$PART.part"
+          done
+
+          ls -lh "$SAMPLE_DIR/app/src/main/assets/model"
+
+      - name: Build NEXUS APK
+        shell: bash
+        env:
+          JAVA_TOOL_OPTIONS: '-Xmx5g -Dfile.encoding=UTF-8'
+        run: |
+          set -euo pipefail
+
+          cd "$SAMPLE_DIR"
+
+          chmod +x ./gradlew
+
+          ./gradlew \
             --no-daemon \
             --stacktrace \
-            clean \
-            assembleDebug
+            --max-workers=2 \
+            :app:assembleDebug
 
       - name: Verify APK
         shell: bash
         run: |
           set -euo pipefail
 
-          APK="$(find "$PROJECT_DIR/app/build/outputs/apk/debug" \
-            -type f -name '*.apk' -print -quit)"
+          APK="$SAMPLE_DIR/app/build/outputs/apk/debug/app-debug.apk"
 
-          if [ -z "$APK" ]; then
-            echo "ERROR: APK was not generated"
-            exit 1
-          fi
+          test -s "$APK"
 
-          echo "===== APK SUCCESS ====="
-          echo "$APK"
-          ls -lh "$APK"
+          echo "APK size:"
+          du -h "$APK"
 
-      - name: Upload APK
+          echo "APK SHA-256:"
+          sha256sum "$APK"
+
+          unzip -l "$APK" | grep 'assets/model/model-.*part'
+
+          unzip -t "$APK" >/dev/null
+
+          "$ANDROID_HOME/build-tools/36.0.0/apksigner" \
+            verify --verbose "$APK"
+
+      - name: Upload NEXUS APK
         uses: actions/upload-artifact@v4
         with:
-          name: NEXUS-APK
-          path: ${{ env.PROJECT_DIR }}/app/build/outputs/apk/debug/*.apk
+          name: NEXUS-Single-APK-Gemma4-E2B
+          path: ${{ env.SAMPLE_DIR }}/app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
+          retention-days: 14
