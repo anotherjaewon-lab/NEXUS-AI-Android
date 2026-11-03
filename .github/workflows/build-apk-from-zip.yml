@@ -25,39 +25,77 @@ jobs:
           set -euo pipefail
           mkdir -p extracted
           unzip -q NEXUS_Android_Reviewed.zip -d extracted
+
           PROJECT="$(find extracted -type f -name settings.gradle.kts -print -quit)"
-          test -n "$PROJECT"
+          if [ -z "$PROJECT" ]; then
+            echo "ERROR: settings.gradle.kts not found"
+            exit 1
+          fi
+
           PROJECT="$(dirname "$PROJECT")"
           echo "PROJECT_DIR=$PROJECT" >> "$GITHUB_ENV"
-          echo "Project: $PROJECT"
+          echo "Project directory: $PROJECT"
 
       - name: Fix Kotlin versions
         shell: bash
         run: |
           set -euo pipefail
+
           while IFS= read -r -d '' file; do
             sed -i 's/2.1.0/2.4.0/g; s/2.2.0/2.4.0/g' "$file"
-          done < <(find "$PROJECT_DIR" -type f \( -name '*.gradle' -o -name '*.gradle.kts' -o -name '*.toml' -o -name 'gradle.properties' \) -print0)
+          done < <(
+            find "$PROJECT_DIR" -type f \
+              \( -name '*.gradle' \
+              -o -name '*.gradle.kts' \
+              -o -name '*.toml' \
+              -o -name 'gradle.properties' \) \
+              -print0
+          )
 
-          echo "===== Kotlin settings ====="
-          grep -RInE 'kotlin|2.4.0' "$PROJECT_DIR" --include='*.gradle' --include='*.gradle.kts' --include='*.toml' || true
-
-      - name: Install Java
+      - name: Install Java 17
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '17'
 
-      - name: Setup Gradle
-        uses: gradle/actions/setup-gradle@v4
+      - name: Install Gradle 8.11.1
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          curl -fL \
+            https://services.gradle.org/distributions/gradle-8.11.1-bin.zip \
+            -o /tmp/gradle.zip
+
+          unzip -q /tmp/gradle.zip -d /tmp
+          /tmp/gradle-8.11.1/bin/gradle --version
 
       - name: Build APK
         shell: bash
         working-directory: ${{ env.PROJECT_DIR }}
         run: |
           set -euo pipefail
-          chmod +x gradlew
-          ./gradlew --no-daemon clean assembleDebug
+
+          /tmp/gradle-8.11.1/bin/gradle \
+            --no-daemon \
+            clean \
+            assembleDebug
+
+      - name: Verify APK
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          APK="$(find "$PROJECT_DIR/app/build/outputs/apk/debug" \
+            -type f -name '*.apk' -print -quit)"
+
+          if [ -z "$APK" ]; then
+            echo "ERROR: APK was not generated"
+            exit 1
+          fi
+
+          echo "APK generated: $APK"
+          ls -lh "$APK"
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
