@@ -1,5 +1,6 @@
 
 name: Build NEXUS APK from uploaded project ZIP
+
 on:
   workflow_dispatch:
   push:
@@ -25,10 +26,12 @@ jobs:
         with:
           gradle-version: '8.11.1'
 
-      - name: Extract project ZIP
+      - name: Extract project and fix Kotlin version
         run: |
           unzip -q NEXUS_Android_Reviewed.zip -d extracted
-          test -f extracted/NEXUS_Full_OnDevice/app/build.gradle.kts
+          cd extracted/NEXUS_Full_OnDevice
+          test -f app/build.gradle.kts
+          grep -RIl '2.1.0' --include='*.gradle.kts' . | xargs -r sed -i 's/2.1.0/2.4.0/g'
 
       - name: Build debug APK
         working-directory: extracted/NEXUS_Full_OnDevice
@@ -39,4 +42,3 @@ jobs:
           name: NEXUS-debug-apk
           path: extracted/NEXUS_Full_OnDevice/app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
-
